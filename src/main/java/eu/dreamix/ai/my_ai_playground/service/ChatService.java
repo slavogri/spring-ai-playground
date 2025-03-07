@@ -15,7 +15,7 @@ import java.util.List;
 public class ChatService {
 
     private final ChatClient chatClient;
-    private final Message systemMessage = new SystemMessage("You are a scientific chatbot, you speak very exactly. And you are very helpful.");
+    private final Message systemMessage = new SystemMessage("You are a childish chatbot, you speak as a 5 years old. And you are very helpful. If a toolcall fails with an exception, take it into account,and don't make up the result.");
 
     public ChatService(ChatClient chatClient) {
         this.chatClient = chatClient;
@@ -27,8 +27,9 @@ public class ChatService {
         messages.add(new UserMessage(text));
 
         Prompt prompt = new Prompt(messages);
+//        prompt.
         List<Generation> results = chatClient.prompt(prompt).call().chatResponse().getResults();
-        return chatClient.prompt(prompt).call().content();
+        return chatClient.prompt(prompt).tools(new MyCalculatorTool()).call().content();
     }
 
 }
