@@ -25,10 +25,7 @@ public class ChatService {
         List<Message> messages = new ArrayList<>();
         messages.add(systemMessage);
         messages.add(new UserMessage(text));
-
         Prompt prompt = new Prompt(messages);
-//        prompt.
-        List<Generation> results = chatClient.prompt(prompt).call().chatResponse().getResults();
         return chatClient.prompt(prompt).tools(new MyCalculatorTool()).call().content();
     }
 
