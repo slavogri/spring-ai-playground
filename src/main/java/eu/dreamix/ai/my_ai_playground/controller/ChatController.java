@@ -1,17 +1,15 @@
 package eu.dreamix.ai.my_ai_playground.controller;
 
 import eu.dreamix.ai.my_ai_playground.service.ChatService;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.*;
 
 @RestController
 @RequestMapping("/api/chat")
 public class ChatController {
 
-    private final ChatService chatService;
-
-    public ChatController(ChatService chatService) {
-        this.chatService = chatService;
-    }
+    @Autowired
+    private ChatService chatService;
 
     /**
      * /api/chat/text-generation
