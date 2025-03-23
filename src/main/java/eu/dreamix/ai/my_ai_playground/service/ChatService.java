@@ -1,12 +1,14 @@
 package eu.dreamix.ai.my_ai_playground.service;
 
 import jakarta.annotation.PostConstruct;
+import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.SystemMessage;
 import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.prompt.Prompt;
+import org.springframework.ai.embedding.EmbeddingModel;
 import org.springframework.core.io.Resource;
 import org.springframework.core.io.support.PathMatchingResourcePatternResolver;
 import org.springframework.stereotype.Service;
@@ -15,23 +17,20 @@ import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 import java.util.stream.Collectors;
 
 @Service
 @Slf4j
+@RequiredArgsConstructor
 public class ChatService {
     private final ChatClient chatClient;
+    private final EmbeddingModel embeddingModel;
 
-    public ChatService(ChatClient chatClient) {
-        this.chatClient = chatClient;
-    }
 
     HashMap <String, String> documentsByFilename = new HashMap<>();
-    HashMap <String, String> topicsByFilename = new HashMap<>();
+//    HashMap <String, String> topicsByFilename = new HashMap<>();
+    HashMap <String, float[]> embedingsByFilename = new HashMap<>();
 
 
     @PostConstruct
@@ -41,72 +40,73 @@ public class ChatService {
             String content = readResourceContent(resource);
             documentsByFilename.put(filename, content);
 
-            List<Message> messages = new ArrayList<>();
-            messages.add(new SystemMessage("You are a text analyzing tool. Please extract the topics from the following text and return them as a comma-separated list. Text: " + content));
-            Prompt prompt = new Prompt(messages);
-            String topics = chatClient.prompt(prompt).call().content();
-            log.info("Extracted topics for {}: {}", filename, topics);
-            topicsByFilename.put(filename, topics);
+
+            float[] embeding = embeddingModel.embed(content);
+            embedingsByFilename.put(filename,embeding);
+//            List<Message> messages = new ArrayList<>();
+//            messages.add(new SystemMessage("You are a text analyzing tool. Please extract the topics from the following text and return them as a comma-separated list. Text: " + content));
+//            Prompt prompt = new Prompt(messages);
+//            String topics = chatClient.prompt(prompt).call().content();
+//            log.info("Extracted topics for {}: {}", filename, topics);
+//            topicsByFilename.put(filename, topics);
         });
     }
 
 
     public String generateTextSynchronous(String userPrompt){
-        Map<String, Double> relevanceProbabilities = new HashMap<>();
-        for (Map.Entry<String, String> entry : topicsByFilename.entrySet()) {
+        float[] userPromptEmbeding = embeddingModel.embed(userPrompt);
+
+        Map<String, Double> currentPromptSimilarityToDocumentByFilename = new HashMap<>();
+        for (Map.Entry<String, float[]> entry : embedingsByFilename.entrySet()) {
             String filename = entry.getKey();
-            String topics = entry.getValue();
-            
-            List<Message> relevanceMessages = new ArrayList<>();
-            relevanceMessages.add(new SystemMessage(
-                "You are a relevance analyzer. Return only a number between 0 and 1 that represents the probability " +
-                "that the user's question is related to the following topics: " + topics + 
-                "\nConsider 0 as completely unrelated and 1 as highly related. Up to 3 Decimal points are expected." +
-                "Respond ONLY with the number, no other text."
-            ));
-            relevanceMessages.add(new UserMessage(userPrompt));
-            Prompt relevancePrompt = new Prompt(relevanceMessages);
-            String probabilityStr = chatClient.prompt(relevancePrompt).call().content().trim();
-            
-            try {
-                double probability = Double.parseDouble(probabilityStr);
-                // Ensure the probability is between 0 and 1
-                probability = Math.min(1.0, Math.max(0.0, probability));
-                relevanceProbabilities.put(filename, probability);
-            } catch (NumberFormatException e) {
-                log.error("Failed to parse probability for file {}: {}", filename, probabilityStr);
-                relevanceProbabilities.put(filename, 0.0);
-            }
+            float[] embeding = entry.getValue();
+
+            // Calculate cosine similarity between user prompt embedding and document embedding
+            double similarity = calculateSimilarity(userPromptEmbeding, embeding);
+            currentPromptSimilarityToDocumentByFilename.put(filename, similarity);
         }
 
         // Find the document with the highest relevance probability
-        String mostRelevantDoc = relevanceProbabilities.entrySet().stream()
-                .max(Map.Entry.comparingByValue())
-                .map(Map.Entry::getKey)
-                .orElse(null);
+        String[] relevantDoc = getRelevantDocuments(currentPromptSimilarityToDocumentByFilename, 2, 0.6);
 
-        // Create the system message with additional context if a relevant document was found
-        SystemMessage systemMessage;
-        if (mostRelevantDoc != null && relevanceProbabilities.get(mostRelevantDoc) > 0.5) {
-            String docContent = documentsByFilename.get(mostRelevantDoc);
-            systemMessage = new SystemMessage(
+        SystemMessage systemMessage = new SystemMessage(
                 "You are a helpful assistant. Use the following additional context to help answer the question. " +
                         "If the context is relevant, use it in your response. If not, you can ignore it.:\n\n" +
-                        "Context:\n" + docContent + "\n\n"
-            );
-        } else {
-            systemMessage = new SystemMessage("You are a helpful assistant.");
-        }
-
+                        "Context:\n" + Arrays.toString(relevantDoc) + "\n"
+        );
 
         List<Message> messages = new ArrayList<>();
         messages.add(systemMessage);
         messages.add(new UserMessage(userPrompt));
         Prompt prompt = new Prompt(messages);
-        return chatClient.prompt(prompt).tools(new MyCalculatorTool()).call().content();
+            return chatClient.prompt(prompt).tools(new MyCalculatorTool()).call().content();
     }
 
+    private String[] getRelevantDocuments(Map<String, Double> currentPromptSimilarityToDocumentByFilename, int firstNDocuments, double similarityThreshold) {
+        String [] fileNames = currentPromptSimilarityToDocumentByFilename.entrySet().stream()
+                .filter(entry -> entry.getValue() > similarityThreshold)
+                .sorted((e1, e2) -> e2.getValue().compareTo(e1.getValue()))
+                .limit(firstNDocuments).map(Map.Entry::getKey).toArray(String[]::new);
 
+        String[] documents = new String[fileNames.length];
+        for (int j = 0; j < fileNames.length; j++) {
+            documents[j] = documentsByFilename.get(fileNames[j]);
+        }
+        return documents;
+    }
+
+    private static double calculateSimilarity(float[] userPromptEmbeding, float[] embeding) {
+        double dotProduct = 0.0;
+        double normA = 0.0;
+        double normB = 0.0;
+        for (int i = 0; i < userPromptEmbeding.length; i++) {
+            dotProduct += userPromptEmbeding[i] * embeding[i];
+            normA += userPromptEmbeding[i] * userPromptEmbeding[i];
+            normB += embeding[i] * embeding[i];
+        }
+        double similarity = dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
+        return similarity;
+    }
 
 
     public List<Resource> getAllDocsResources() {
