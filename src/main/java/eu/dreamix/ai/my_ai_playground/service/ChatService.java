@@ -2,21 +2,25 @@ package eu.dreamix.ai.my_ai_playground.service;
 
 import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
+
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.SystemMessage;
 import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.prompt.Prompt;
+import org.springframework.ai.document.Document;
 import org.springframework.ai.embedding.EmbeddingModel;
+import org.springframework.ai.reader.TextReader;
+import org.springframework.ai.transformer.splitter.TokenTextSplitter;
+import org.springframework.ai.vectorstore.SearchRequest;
+import org.springframework.ai.vectorstore.SimpleVectorStore;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.io.Resource;
 import org.springframework.core.io.support.PathMatchingResourcePatternResolver;
 import org.springframework.stereotype.Service;
 
-import java.io.BufferedReader;
-import java.io.IOException;
-import java.io.InputStream;
-import java.io.InputStreamReader;
+import java.io.*;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -26,7 +30,10 @@ import java.util.stream.Collectors;
 public class ChatService {
     private final ChatClient chatClient;
     private final EmbeddingModel embeddingModel;
+    private final SimpleVectorStore vectorStore;
 
+    @Value("${my-vectorstore-file}")
+    private String myVectorstoreFile;
 
     HashMap <String, String> documentsByFilename = new HashMap<>();
 //    HashMap <String, String> topicsByFilename = new HashMap<>();
@@ -35,44 +42,59 @@ public class ChatService {
 
     @PostConstruct
     public void init() {
-        getAllDocsResources().stream().forEach(resource -> {
-            String filename = resource.getFilename();
-            String content = readResourceContent(resource);
-            documentsByFilename.put(filename, content);
+        System.out.println(vectorStore.getName());
 
+        File vectorStoreFile = new File(myVectorstoreFile);
+        if (vectorStoreFile.exists()){
+            vectorStore.load(vectorStoreFile);
+        } else {
+            getAllDocsResources().stream().forEach(resource -> {
+                TextReader textReader = new TextReader(resource);
+                textReader.getCustomMetadata().put("filename", resource.getFilename());
+                List<Document> documents = textReader.get();
+                TokenTextSplitter tokenTextSplitter = new TokenTextSplitter();
+                List<Document> splitDocuments = tokenTextSplitter.apply(documents);
+                vectorStore.doAdd(splitDocuments);
 
-            float[] embeding = embeddingModel.embed(content);
-            embedingsByFilename.put(filename,embeding);
-//            List<Message> messages = new ArrayList<>();
-//            messages.add(new SystemMessage("You are a text analyzing tool. Please extract the topics from the following text and return them as a comma-separated list. Text: " + content));
-//            Prompt prompt = new Prompt(messages);
-//            String topics = chatClient.prompt(prompt).call().content();
-//            log.info("Extracted topics for {}: {}", filename, topics);
-//            topicsByFilename.put(filename, topics);
-        });
+            });
+            vectorStore.save(vectorStoreFile);
+        }
     }
 
 
     public String generateTextSynchronous(String userPrompt){
-        float[] userPromptEmbeding = embeddingModel.embed(userPrompt);
+        List<Document> similarityDocuments = vectorStore.similaritySearch(SearchRequest.builder()
+                .query(userPrompt) // [2134124,12341234,1231234,1234,123421,341234213,421342134,123412341234,1234123412341234]
+                .topK(10) // limiting the number of the documents
+                .similarityThreshold(0.7).build()); // limiting the similarity between the user prompt and the document
+        Set<String> similarityDocumentsContent = similarityDocuments.stream().map(Document::getText).collect(Collectors.toSet());
 
-        Map<String, Double> currentPromptSimilarityToDocumentByFilename = new HashMap<>();
-        for (Map.Entry<String, float[]> entry : embedingsByFilename.entrySet()) {
-            String filename = entry.getKey();
-            float[] embeding = entry.getValue();
 
-            // Calculate cosine similarity between user prompt embedding and document embedding
-            double similarity = calculateSimilarity(userPromptEmbeding, embeding);
-            currentPromptSimilarityToDocumentByFilename.put(filename, similarity);
-        }
+        Set<Double> similaritySores = similarityDocuments.stream().map(Document::getScore).collect(Collectors.toSet());
+        System.out.println(Arrays.toString(similaritySores.toArray()));
 
-        // Find the document with the highest relevance probability
-        String[] relevantDoc = getRelevantDocuments(currentPromptSimilarityToDocumentByFilename, 2, 0.6);
+
+
+//
+//        float[] userPromptEmbeding = embeddingModel.embed(userPrompt);
+//
+//        Map<String, Double> currentPromptSimilarityToDocumentByFilename = new HashMap<>();
+//        for (Map.Entry<String, float[]> entry : embedingsByFilename.entrySet()) {
+//            String filename = entry.getKey();
+//            float[] embeding = entry.getValue();
+//
+//            // Calculate cosine similarity between user prompt embedding and document embedding
+//            double similarity = calculateSimilarity(userPromptEmbeding, embeding);
+//            currentPromptSimilarityToDocumentByFilename.put(filename, similarity);
+//        }
+//
+//        // Find the document with the highest relevance probability
+//        String[] relevantDoc = getRelevantDocuments(currentPromptSimilarityToDocumentByFilename, 2, 0.6);
 
         SystemMessage systemMessage = new SystemMessage(
                 "You are a helpful assistant. Use the following additional context to help answer the question. " +
                         "If the context is relevant, use it in your response. If not, you can ignore it.:\n\n" +
-                        "Context:\n" + Arrays.toString(relevantDoc) + "\n"
+                        "Context:\n" + Arrays.toString(similarityDocumentsContent.toArray()) + "\n"
         );
 
         List<Message> messages = new ArrayList<>();
