@@ -49,6 +49,7 @@ public class ChatService {
             vectorStore.load(vectorStoreFile);
         } else {
             getAllDocsResources().stream().forEach(resource -> {
+
                 TextReader textReader = new TextReader(resource);
                 textReader.getCustomMetadata().put("filename", resource.getFilename());
                 List<Document> documents = textReader.get();
